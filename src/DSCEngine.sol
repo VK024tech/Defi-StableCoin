@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
+import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 /**
  * @title DSCEngine
  * @author Vivek
@@ -16,16 +20,28 @@ pragma solidity ^0.8.18;
  * it is similar to DAI if DAI had no governance, no fees, and was only backed by WETH and WBTC.
  */
 
-contract DSCEngine {
+contract DSCEngine is ReentrancyGuard {
     ///////////////////////
     // Errors          ////
     ///////////////////////
     error DSCEngine__NeedsMoreThanZero();
+    error DSCEngine__TokenAddressesAndPriceFeedsLengthMismatch();
+    error DSCEngine__NotAllowedToken();
+    error DSCEngine__TransferFailed();
     ///////////////////////
     // state varaibles ////
     ///////////////////////
 
-    
+    mapping(address token => address priceFeed) private s_priceFeeds;
+    mapping(address user => mapping(address token => uint256 amount)) private s_collateralDepposited;
+
+    DecentralizedStableCoin private immutable i_dsc;
+
+    ///////////////////////
+    // Events          ////
+    ///////////////////////
+
+    event CollateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
 
     ///////////////////////
     // Modifiers       ////
@@ -37,15 +53,28 @@ contract DSCEngine {
         _;
     }
 
-    // modifier isAllowedToken(address token) {
-
-    // }
+    modifier isAllowedToken(address token) {
+        if (s_priceFeeds[token] == address(0)) {
+            revert DSCEngine__NotAllowedToken();
+        }
+        _;
+    }
 
     ///////////////////////
     // Functions       ////
     ///////////////////////
 
-    constructor() {}
+    constructor(address[] memory tokenAddresses, address[] memory priceFeedAddresses, address dscAddress) {
+        if (tokenAddresses.length != priceFeedAddresses.length) {
+            revert DSCEngine__TokenAddressesAndPriceFeedsLengthMismatch();
+        }
+
+        for (uint256 i = 0; i < tokenAddresses.length; i++) {
+            s_priceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
+        }
+
+        i_dsc = DecentralizedStableCoin(dscAddress);
+    }
 
     ////////////////////////////////
     // External Functions       ////
@@ -58,10 +87,19 @@ contract DSCEngine {
      * @param tokenCollateralAddress The address of the collateral token (e.g., WETH, WBTC)
      * @param amountCollateral The amount of collateral to deposit
      */
-    function depositCollateral(
-        address tokenCollateralAddress,
-        uint256 amountCollateral
-    ) external moreThanZero(amountCollateral) {}
+    function depositCollateral(address tokenCollateralAddress, uint256 amountCollateral)
+        external
+        moreThanZero(amountCollateral)
+        isAllowedToken(tokenCollateralAddress)
+        nonReentrant
+    {
+        s_collateralDepposited[msg.sender][tokenCollateralAddress] += amountCollateral;
+        emit CollateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+    }
 
     function redeemCollateralForDsc() external {}
 
